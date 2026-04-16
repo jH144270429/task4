@@ -110,3 +110,13 @@ export function IconDatabase(props: IconProps) {
     </BaseIcon>
   );
 }
+
+export function IconSparkles(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M12 2l1.2 3.8L17 7l-3.8 1.2L12 12l-1.2-3.8L7 7l3.8-1.2L12 2Z" />
+      <path d="M19 12l.8 2.4L22 15l-2.2.6L19 18l-.8-2.4L16 15l2.2-.6L19 12Z" />
+      <path d="M4.5 13l.7 2.1L7 15.5l-1.8.5L4.5 18l-.7-2-1.8-.5 1.8-.4.7-2.1Z" />
+    </BaseIcon>
+  );
+}

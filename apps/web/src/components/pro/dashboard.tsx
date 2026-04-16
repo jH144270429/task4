@@ -16,12 +16,26 @@ import {
   IconCalendar,
   IconDatabase,
   IconMapPin,
+  IconSparkles,
   IconThermometer,
   IconTrend,
 } from "@/components/ui/icons";
+import { WeatherIcon } from "@/components/ui/weather-icons";
 
 type TemperatureUnit = "c" | "f";
 type WindSpeedUnit = "kmh" | "mph";
+
+type UserPreferencesRow = {
+  user_id: string;
+  temperature_unit: TemperatureUnit;
+  wind_speed_unit: WindSpeedUnit;
+  default_location_id: string | null;
+  timezone_display: "location" | "utc";
+  time_format: "12h" | "24h";
+  alerts_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+};
 
 type CurrentWeatherRow = {
   location_id: string;
@@ -76,6 +90,121 @@ type SyncRunRow = {
   error_message: string | null;
   created_at: string;
 };
+
+function minutesSince(iso: string | null | undefined) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.round((Date.now() - t) / 60000));
+}
+
+function freshnessLabel(minutes: number | null) {
+  if (minutes == null) return { label: "Unknown", tone: "neutral" as const };
+  if (minutes <= 15) return { label: "Fresh", tone: "good" as const };
+  if (minutes <= 60) return { label: "OK", tone: "neutral" as const };
+  return { label: "Stale", tone: "bad" as const };
+}
+
+function StatusPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "good" | "neutral" | "bad";
+}) {
+  const className =
+    tone === "good"
+      ? "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+      : tone === "bad"
+        ? "bg-red-500/10 text-red-700 dark:bg-red-500/15 dark:text-red-300"
+        : "bg-zinc-500/10 text-zinc-700 dark:bg-white/[0.08] dark:text-zinc-200";
+
+  return (
+    <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${className}`}>
+      {label}
+    </span>
+  );
+}
+
+function scoreLabel(score: number) {
+  if (score >= 85) return "Excellent";
+  if (score >= 70) return "Good";
+  if (score >= 55) return "Fair";
+  return "Poor";
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
+function normalizeWeatherKind(code: number | null | undefined) {
+  if (code == null) return "unknown";
+  if (code === 0) return "clear";
+  if (code >= 1 && code <= 3) return "cloud";
+  if (code === 45 || code === 48) return "fog";
+  if (code >= 51 && code <= 57) return "rain";
+  if (code >= 61 && code <= 67) return "rain";
+  if (code >= 71 && code <= 77) return "snow";
+  if (code >= 80 && code <= 82) return "rain";
+  if (code === 85 || code === 86) return "snow";
+  if (code >= 95 && code <= 99) return "thunder";
+  return "other";
+}
+
+function computeOutdoorScore(days: DailyForecastRow[]) {
+  const slice = days.slice(0, 3);
+  if (slice.length === 0) return null;
+
+  let scoreTotal = 0;
+  const reasons = new Set<string>();
+
+  for (const d of slice) {
+    let s = 100;
+    const avgTemp =
+      d.temp_max_c == null || d.temp_min_c == null
+        ? null
+        : (d.temp_max_c + d.temp_min_c) / 2;
+    if (avgTemp != null) {
+      const delta = Math.abs(avgTemp - 22);
+      s -= clamp(delta * 2.2, 0, 30);
+      if (avgTemp > 30) reasons.add("Hot");
+      if (avgTemp < 10) reasons.add("Cold");
+    }
+
+    const rainProb = d.precipitation_probability_max ?? null;
+    if (rainProb != null) {
+      s -= clamp(rainProb * 0.45, 0, 45);
+      if (rainProb >= 50) reasons.add("Rain risk");
+    }
+
+    const rainSum = d.precipitation_sum_mm ?? null;
+    if (rainSum != null) {
+      s -= clamp(rainSum * 1.2, 0, 25);
+      if (rainSum >= 5) reasons.add("Wet");
+    }
+
+    const wind = d.wind_speed_max_kmh ?? null;
+    if (wind != null) {
+      s -= clamp(Math.max(0, wind - 22) * 1.3, 0, 30);
+      if (wind >= 35) reasons.add("Windy");
+    }
+
+    const kind = normalizeWeatherKind(d.weather_code);
+    if (kind === "thunder") {
+      s -= 25;
+      reasons.add("Thunder");
+    }
+    if (kind === "fog") {
+      s -= 15;
+      reasons.add("Fog");
+    }
+
+    scoreTotal += clamp(s, 0, 100);
+  }
+
+  const score = Math.round(scoreTotal / slice.length);
+  return { score, label: scoreLabel(score), reasons: Array.from(reasons).slice(0, 4) };
+}
 
 function GlassCard({
   icon,
@@ -183,11 +312,15 @@ function UnitToggle({
 function CityPicker({
   user,
   selectedLocationId,
+  defaultLocationId,
   onSelectedLocationIdChange,
+  onSetDefaultLocation,
 }: {
   user: User | null;
   selectedLocationId: string;
+  defaultLocationId: string | null;
   onSelectedLocationIdChange: (locationId: string) => void;
+  onSetDefaultLocation: (locationId: string) => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -195,6 +328,10 @@ function CityPicker({
   const selectedLocation = useMemo(
     () => locations.find((l) => l.id === selectedLocationId) ?? null,
     [locations, selectedLocationId]
+  );
+  const locationsKey = useMemo(
+    () => locations.map((l) => l.id).join("|"),
+    [locations]
   );
 
   useEffect(() => {
@@ -288,8 +425,12 @@ function CityPicker({
   useEffect(() => {
     if (selectedLocationId) return;
     if (locations.length === 0) return;
-    onSelectedLocationIdChange(locations[0].id);
-  }, [locations, selectedLocationId, onSelectedLocationIdChange]);
+    const preferred =
+      defaultLocationId && locations.some((l) => l.id === defaultLocationId)
+        ? defaultLocationId
+        : null;
+    onSelectedLocationIdChange(preferred ?? locations[0].id);
+  }, [locationsKey, selectedLocationId, onSelectedLocationIdChange, defaultLocationId]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -323,6 +464,22 @@ function CityPicker({
           </option>
         ))}
       </select>
+
+      {user && selectedLocationId ? (
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-zinc-500">
+            {defaultLocationId === selectedLocationId ? "Default city" : " "}
+          </span>
+          <button
+            type="button"
+            disabled={defaultLocationId === selectedLocationId}
+            onClick={() => onSetDefaultLocation(selectedLocationId)}
+            className="rounded-full px-2 py-1 text-xs font-medium text-zinc-600 hover:bg-black/[0.04] disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-white/[0.06]"
+          >
+            Set default
+          </button>
+        </div>
+      ) : null}
 
       {user && locations.length === 0 ? (
         <p className="text-xs text-zinc-500">
@@ -493,6 +650,8 @@ export function ProDashboard({ user }: { user: User | null }) {
   const [selectedLocationId, setSelectedLocationId] = useState("");
   const [temperatureUnit, setTemperatureUnit] = useState<TemperatureUnit>("c");
   const [windSpeedUnit, setWindSpeedUnit] = useState<WindSpeedUnit>("kmh");
+  const [preferences, setPreferences] = useState<UserPreferencesRow | null>(null);
+  const [prefsSaving, setPrefsSaving] = useState(false);
 
   const [currentWeather, setCurrentWeather] = useState<CurrentWeatherRow | null>(
     null
@@ -502,6 +661,9 @@ export function ProDashboard({ user }: { user: User | null }) {
   const [syncRuns, setSyncRuns] = useState<SyncRunRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const today = dailyForecasts[0] ?? null;
+  const outdoor = useMemo(() => computeOutdoorScore(dailyForecasts), [dailyForecasts]);
+  const defaultLocationId = preferences?.default_location_id ?? null;
 
   const tempDisplay = useMemo(() => {
     if (!currentWeather) return "—";
@@ -522,6 +684,158 @@ export function ProDashboard({ user }: { user: User | null }) {
         : kmhToMph(currentWeather.wind_speed_kmh);
     return `${formatNumber(v, 1)} ${windSpeedUnit === "kmh" ? "km/h" : "mph"}`;
   }, [currentWeather, windSpeedUnit]);
+
+  const currentAge = useMemo(
+    () => minutesSince(currentWeather?.updated_at),
+    [currentWeather?.updated_at]
+  );
+  const hourlyAge = useMemo(() => {
+    if (hourlyForecasts.length === 0) return null;
+    const iso = hourlyForecasts[0]?.updated_at;
+    return minutesSince(iso);
+  }, [hourlyForecasts]);
+  const dailyAge = useMemo(() => {
+    if (dailyForecasts.length === 0) return null;
+    const iso = dailyForecasts[0]?.updated_at;
+    return minutesSince(iso);
+  }, [dailyForecasts]);
+
+  useEffect(() => {
+    if (!user) {
+      setPreferences(null);
+      setPrefsSaving(false);
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    let active = true;
+
+    supabase
+      .from("user_preferences")
+      .select(
+        "user_id,temperature_unit,wind_speed_unit,default_location_id,timezone_display,time_format,alerts_enabled,created_at,updated_at"
+      )
+      .eq("user_id", user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setError((prev) => prev ?? error.message);
+          return;
+        }
+        if (data) {
+          const prefs = data as UserPreferencesRow;
+          setPreferences(prefs);
+          setTemperatureUnit(prefs.temperature_unit);
+          setWindSpeedUnit(prefs.wind_speed_unit);
+        } else {
+          setPreferences({
+            user_id: user.id,
+            temperature_unit: "c",
+            wind_speed_unit: "kmh",
+            default_location_id: null,
+            timezone_display: "location",
+            time_format: "24h",
+            alerts_enabled: true,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) return;
+    if (!preferences) return;
+
+    if (
+      preferences.temperature_unit === temperatureUnit &&
+      preferences.wind_speed_unit === windSpeedUnit
+    ) {
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    const controller = new AbortController();
+    const t = setTimeout(() => {
+      setPrefsSaving(true);
+      supabase
+        .from("user_preferences")
+        .upsert(
+          {
+            user_id: user.id,
+            temperature_unit: temperatureUnit,
+            wind_speed_unit: windSpeedUnit,
+            default_location_id: preferences.default_location_id,
+            timezone_display: preferences.timezone_display,
+            time_format: preferences.time_format,
+            alerts_enabled: preferences.alerts_enabled,
+          },
+          { onConflict: "user_id" }
+        )
+        .select(
+          "user_id,temperature_unit,wind_speed_unit,default_location_id,timezone_display,time_format,alerts_enabled,created_at,updated_at"
+        )
+        .maybeSingle()
+        .then(({ data, error }) => {
+          if (controller.signal.aborted) return;
+          if (error) {
+            setError((prev) => prev ?? error.message);
+            return;
+          }
+          if (data) setPreferences(data as UserPreferencesRow);
+        })
+        .finally(() => {
+          if (controller.signal.aborted) return;
+          setPrefsSaving(false);
+        });
+    }, 800);
+
+    return () => {
+      controller.abort();
+      clearTimeout(t);
+    };
+  }, [user?.id, preferences, temperatureUnit, windSpeedUnit]);
+
+  async function setDefaultLocation(locationId: string) {
+    if (!user) return;
+    if (!preferences) return;
+    const supabase = getSupabaseBrowserClient();
+    setPrefsSaving(true);
+    setError(null);
+
+    const result = await supabase
+      .from("user_preferences")
+      .upsert(
+        {
+          user_id: user.id,
+          temperature_unit: temperatureUnit,
+          wind_speed_unit: windSpeedUnit,
+          default_location_id: locationId,
+          timezone_display: preferences.timezone_display,
+          time_format: preferences.time_format,
+          alerts_enabled: preferences.alerts_enabled,
+        },
+        { onConflict: "user_id" }
+      )
+      .select(
+        "user_id,temperature_unit,wind_speed_unit,default_location_id,timezone_display,time_format,alerts_enabled,created_at,updated_at"
+      )
+      .maybeSingle();
+
+    if (result.error) {
+      setError(result.error.message);
+      setPrefsSaving(false);
+      return;
+    }
+
+    if (result.data) setPreferences(result.data as UserPreferencesRow);
+    setPrefsSaving(false);
+  }
 
   useEffect(() => {
     if (!selectedLocationId) return;
@@ -652,12 +966,20 @@ export function ProDashboard({ user }: { user: User | null }) {
             status.
           </p>
         </div>
-        <UnitToggle
-          temperatureUnit={temperatureUnit}
-          windSpeedUnit={windSpeedUnit}
-          onTemperatureUnitChange={setTemperatureUnit}
-          onWindSpeedUnitChange={setWindSpeedUnit}
-        />
+        <div className="flex items-center gap-2">
+          {user ? (
+            <StatusPill
+              label={prefsSaving ? "Saving…" : "Preferences"}
+              tone={prefsSaving ? "neutral" : "good"}
+            />
+          ) : null}
+          <UnitToggle
+            temperatureUnit={temperatureUnit}
+            windSpeedUnit={windSpeedUnit}
+            onTemperatureUnitChange={setTemperatureUnit}
+            onWindSpeedUnitChange={setWindSpeedUnit}
+          />
+        </div>
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[360px_1fr]">
@@ -670,7 +992,9 @@ export function ProDashboard({ user }: { user: User | null }) {
             <CityPicker
               user={user}
               selectedLocationId={selectedLocationId}
+              defaultLocationId={defaultLocationId}
               onSelectedLocationIdChange={setSelectedLocationId}
+              onSetDefaultLocation={setDefaultLocation}
             />
           </GlassCard>
 
@@ -685,6 +1009,21 @@ export function ProDashboard({ user }: { user: User | null }) {
               </p>
             ) : (
               <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusPill
+                    label={`Current: ${freshnessLabel(currentAge).label}${currentAge == null ? "" : ` · ${currentAge}m`}`}
+                    tone={freshnessLabel(currentAge).tone}
+                  />
+                  <StatusPill
+                    label={`Hourly: ${freshnessLabel(hourlyAge).label}${hourlyAge == null ? "" : ` · ${hourlyAge}m`}`}
+                    tone={freshnessLabel(hourlyAge).tone}
+                  />
+                  <StatusPill
+                    label={`Daily: ${freshnessLabel(dailyAge).label}${dailyAge == null ? "" : ` · ${dailyAge}m`}`}
+                    tone={freshnessLabel(dailyAge).tone}
+                  />
+                </div>
+
                 <dl className="grid grid-cols-2 gap-3">
                   <div>
                     <dt className="text-xs text-zinc-500">Current updated</dt>
@@ -764,14 +1103,23 @@ export function ProDashboard({ user }: { user: User | null }) {
               </p>
             ) : (
               <div className="flex flex-wrap items-end justify-between gap-6">
-                <div>
-                  <p className="text-xs text-zinc-500">Temperature</p>
-                  <p className="mt-1 text-3xl font-semibold tracking-[-0.03em] text-zinc-900 dark:text-zinc-50">
-                    {tempDisplay}
-                  </p>
-                  <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                    {describeWeatherCode(currentWeather?.weather_code)}
-                  </p>
+                <div className="flex items-center gap-4">
+                  <div className="rounded-2xl border border-zinc-200/80 bg-white/60 p-3 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10">
+                    <WeatherIcon
+                      weatherCode={currentWeather?.weather_code}
+                      isDay={currentWeather?.is_day}
+                      className="h-10 w-10 text-zinc-900 dark:text-zinc-50"
+                    />
+                  </div>
+                  <div>
+                    <p className="text-xs text-zinc-500">Temperature</p>
+                    <p className="mt-1 text-3xl font-semibold tracking-[-0.03em] text-zinc-900 dark:text-zinc-50">
+                      {tempDisplay}
+                    </p>
+                    <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                      {describeWeatherCode(currentWeather?.weather_code)}
+                    </p>
+                  </div>
                 </div>
                 <dl className="grid grid-cols-2 gap-4">
                   <div>
@@ -807,6 +1155,83 @@ export function ProDashboard({ user }: { user: User | null }) {
                     </dd>
                   </div>
                 </dl>
+              </div>
+            )}
+
+            {!loading && today ? (
+              <div className="mt-5 grid grid-cols-2 gap-4 rounded-xl border border-zinc-200/80 bg-white/60 p-4 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10 sm:grid-cols-4">
+                <div>
+                  <p className="text-xs text-zinc-500">Sunrise</p>
+                  <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                    {today.sunrise ? formatDateTimeISO(today.sunrise) : "—"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Sunset</p>
+                  <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                    {today.sunset ? formatDateTimeISO(today.sunset) : "—"}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">UV max</p>
+                  <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                    {today.uv_index_max == null
+                      ? "—"
+                      : formatNumber(today.uv_index_max, 1)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Rain chance</p>
+                  <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                    {today.precipitation_probability_max == null
+                      ? "—"
+                      : `${formatNumber(today.precipitation_probability_max)}%`}
+                  </p>
+                </div>
+              </div>
+            ) : null}
+          </GlassCard>
+
+          <GlassCard
+            icon={<IconSparkles className="h-4 w-4" />}
+            title="Outdoor Score"
+            subtitle="Next 3 days"
+          >
+            {loading ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Loading…
+              </p>
+            ) : !outdoor ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Not enough forecast data yet.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs text-zinc-500">Score</p>
+                  <p className="mt-1 text-3xl font-semibold tracking-[-0.03em] text-zinc-900 dark:text-zinc-50">
+                    {outdoor.score}
+                  </p>
+                  <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
+                    {outdoor.label}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {outdoor.reasons.length === 0 ? (
+                    <span className="rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+                      Comfortable
+                    </span>
+                  ) : (
+                    outdoor.reasons.map((r) => (
+                      <span
+                        key={r}
+                        className="rounded-full bg-black/[0.06] px-3 py-1.5 text-xs font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100"
+                      >
+                        {r}
+                      </span>
+                    ))
+                  )}
+                </div>
               </div>
             )}
           </GlassCard>
@@ -850,12 +1275,13 @@ export function ProDashboard({ user }: { user: User | null }) {
                 <table className="w-full border-separate border-spacing-y-2 text-sm">
                   <thead>
                     <tr className="text-left text-xs text-zinc-500">
+                      <th className="px-3"> </th>
                       <th className="px-3">Day</th>
                       <th className="px-3">Max</th>
                       <th className="px-3">Min</th>
                       <th className="px-3">Rain</th>
                       <th className="px-3">Wind</th>
-                      <th className="px-3">Code</th>
+                      <th className="px-3">Type</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -884,6 +1310,12 @@ export function ProDashboard({ user }: { user: User | null }) {
                           key={d.forecast_date}
                           className="rounded-xl border border-zinc-200/80 bg-white/60 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10"
                         >
+                          <td className="px-3 py-2">
+                            <WeatherIcon
+                              weatherCode={d.weather_code}
+                              className="h-5 w-5 text-zinc-900/80 dark:text-zinc-50/80"
+                            />
+                          </td>
                           <td className="px-3 py-2 font-medium text-zinc-900 dark:text-zinc-50">
                             {formatDateISO(d.forecast_date)}
                           </td>
@@ -910,7 +1342,7 @@ export function ProDashboard({ user }: { user: User | null }) {
                                 }`}
                           </td>
                           <td className="px-3 py-2 text-zinc-900 dark:text-zinc-50">
-                            {d.weather_code == null ? "—" : d.weather_code}
+                            {describeWeatherCode(d.weather_code)}
                           </td>
                         </tr>
                       );

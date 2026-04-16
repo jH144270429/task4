@@ -22,6 +22,15 @@ type AlertRuleRow = {
   updated_at: string;
 };
 
+type DailyForecastRow = {
+  location_id: string;
+  forecast_date: string;
+  temp_max_c: number | null;
+  precipitation_sum_mm: number | null;
+  precipitation_probability_max: number | null;
+  wind_speed_max_kmh: number | null;
+};
+
 function GlassCard({
   icon,
   title,
@@ -72,6 +81,7 @@ export default function AlertsPage() {
   const { user, loading: authLoading } = useAuth();
   const [rules, setRules] = useState<AlertRuleRow[]>([]);
   const [locations, setLocations] = useState<LocationRow[]>([]);
+  const [forecasts, setForecasts] = useState<DailyForecastRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -88,12 +98,76 @@ export default function AlertsPage() {
     return map;
   }, [locations]);
 
+  const forecastByLocation = useMemo(() => {
+    const map = new Map<string, DailyForecastRow[]>();
+    for (const f of forecasts) {
+      const arr = map.get(f.location_id);
+      if (arr) arr.push(f);
+      else map.set(f.location_id, [f]);
+    }
+    for (const [k, arr] of map) {
+      arr.sort((a, b) => a.forecast_date.localeCompare(b.forecast_date));
+      map.set(k, arr);
+    }
+    return map;
+  }, [forecasts]);
+
+  const previewByRuleId = useMemo(() => {
+    const compare = (c: Comparator, a: number, b: number) => {
+      if (c === "gt") return a > b;
+      if (c === "gte") return a >= b;
+      if (c === "lt") return a < b;
+      return a <= b;
+    };
+
+    const metricValue = (r: AlertRuleRow, d: DailyForecastRow) => {
+      if (r.rule_type === "precipitation") return d.precipitation_sum_mm;
+      if (r.rule_type === "temperature_max") return d.temp_max_c;
+      return d.wind_speed_max_kmh;
+    };
+
+    const results = new Map<
+      string,
+      { matches: Array<{ locationId: string; date: string; value: number }>; total: number }
+    >();
+
+    const allLocationIds = locations.map((l) => l.id);
+
+    for (const r of rules) {
+      if (!r.enabled) {
+        results.set(r.id, { matches: [], total: 0 });
+        continue;
+      }
+
+      const candidates = r.location_id ? [r.location_id] : allLocationIds;
+      const matches: Array<{ locationId: string; date: string; value: number }> = [];
+
+      for (const locationId of candidates) {
+        const rows = forecastByLocation.get(locationId) ?? [];
+        for (const d of rows.slice(0, r.horizon_days)) {
+          const v = metricValue(r, d);
+          if (v == null || !Number.isFinite(v)) continue;
+          if (compare(r.comparator, v, r.threshold)) {
+            matches.push({ locationId, date: d.forecast_date, value: v });
+            if (matches.length >= 6) break;
+          }
+        }
+        if (matches.length >= 6) break;
+      }
+
+      results.set(r.id, { matches, total: matches.length });
+    }
+
+    return results;
+  }, [rules, locations, forecastByLocation]);
+
   useEffect(() => {
     if (authLoading) return;
     if (!user) {
       setLoading(false);
       setRules([]);
       setLocations([]);
+      setForecasts([]);
       return;
     }
 
@@ -150,6 +224,41 @@ export default function AlertsPage() {
       active = false;
     };
   }, [authLoading, user?.id]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+    const locationIds = locations.map((l) => l.id);
+    if (locationIds.length === 0) {
+      setForecasts([]);
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    let active = true;
+
+    supabase
+      .from("daily_forecasts")
+      .select(
+        "location_id,forecast_date,temp_max_c,precipitation_sum_mm,precipitation_probability_max,wind_speed_max_kmh"
+      )
+      .in("location_id", locationIds)
+      .order("forecast_date", { ascending: true })
+      .limit(locationIds.length * 15)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          setError((prev) => prev ?? error.message);
+          setForecasts([]);
+          return;
+        }
+        setForecasts((data ?? []) as DailyForecastRow[]);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [authLoading, user?.id, locations]);
 
   async function addRule(e: React.FormEvent) {
     e.preventDefault();
@@ -370,6 +479,7 @@ export default function AlertsPage() {
             <ul className="space-y-2">
               {rules.map((r) => {
                 const loc = r.location_id ? locationById.get(r.location_id) : null;
+                const preview = previewByRuleId.get(r.id) ?? null;
                 return (
                   <li
                     key={r.id}
@@ -387,6 +497,32 @@ export default function AlertsPage() {
                             : "Any favorite city"}{" "}
                           · next {r.horizon_days} days
                         </p>
+                        {forecasts.length === 0 ? (
+                          <p className="mt-2 text-xs text-zinc-500">
+                            No forecast data yet.
+                          </p>
+                        ) : preview && preview.total > 0 ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="rounded-full bg-red-500/10 px-2 py-1 text-[11px] font-medium text-red-700 dark:bg-red-500/15 dark:text-red-300">
+                              Trigger: {preview.total}
+                            </span>
+                            {preview.matches.slice(0, 3).map((m) => {
+                              const name = locationById.get(m.locationId)?.name ?? "City";
+                              return (
+                                <span
+                                  key={`${m.locationId}:${m.date}`}
+                                  className="rounded-full bg-black/[0.06] px-2 py-1 text-[11px] font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100"
+                                >
+                                  {name} · {m.date}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        ) : preview && r.enabled ? (
+                          <p className="mt-2 text-xs text-emerald-700 dark:text-emerald-300">
+                            No triggers in the next {r.horizon_days} days.
+                          </p>
+                        ) : null}
                       </div>
                       <div className="flex items-center gap-2">
                         <button
