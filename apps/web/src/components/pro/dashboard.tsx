@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
+import Link from "next/link";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import type { LocationRow } from "@/lib/types/db";
 import { describeWeatherCode } from "@/lib/weather";
@@ -14,6 +15,7 @@ import {
 } from "@/components/pro/format";
 import {
   IconCalendar,
+  IconBell,
   IconDatabase,
   IconMapPin,
   IconSparkles,
@@ -73,6 +75,22 @@ type HourlyForecastRow = {
   wind_speed_kmh: number | null;
   weather_code: number | null;
   is_day: boolean | null;
+  updated_at: string;
+};
+
+type RuleType = "precipitation" | "temperature_max" | "wind_speed";
+type Comparator = "gt" | "gte" | "lt" | "lte";
+
+type AlertRuleRow = {
+  id: string;
+  user_id: string;
+  location_id: string | null;
+  rule_type: RuleType;
+  comparator: Comparator;
+  threshold: number;
+  horizon_days: number;
+  enabled: boolean;
+  created_at: string;
   updated_at: string;
 };
 
@@ -149,6 +167,26 @@ function normalizeWeatherKind(code: number | null | undefined) {
   if (code === 85 || code === 86) return "snow";
   if (code >= 95 && code <= 99) return "thunder";
   return "other";
+}
+
+function ruleTypeLabel(t: RuleType) {
+  if (t === "precipitation") return "Precipitation";
+  if (t === "temperature_max") return "Max Temperature";
+  return "Wind Speed";
+}
+
+function comparatorLabel(c: Comparator) {
+  if (c === "gt") return ">";
+  if (c === "gte") return "≥";
+  if (c === "lt") return "<";
+  return "≤";
+}
+
+function compareValue(c: Comparator, a: number, b: number) {
+  if (c === "gt") return a > b;
+  if (c === "gte") return a >= b;
+  if (c === "lt") return a < b;
+  return a <= b;
 }
 
 function computeOutdoorScore(days: DailyForecastRow[]) {
@@ -653,6 +691,10 @@ export function ProDashboard({ user }: { user: User | null }) {
   const [preferences, setPreferences] = useState<UserPreferencesRow | null>(null);
   const [prefsSaving, setPrefsSaving] = useState(false);
 
+  const [alertRules, setAlertRules] = useState<AlertRuleRow[]>([]);
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  const [alertsError, setAlertsError] = useState<string | null>(null);
+
   const [currentWeather, setCurrentWeather] = useState<CurrentWeatherRow | null>(
     null
   );
@@ -664,6 +706,77 @@ export function ProDashboard({ user }: { user: User | null }) {
   const today = dailyForecasts[0] ?? null;
   const outdoor = useMemo(() => computeOutdoorScore(dailyForecasts), [dailyForecasts]);
   const defaultLocationId = preferences?.default_location_id ?? null;
+
+  useEffect(() => {
+    if (!user) {
+      setAlertRules([]);
+      setAlertsLoading(false);
+      setAlertsError(null);
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    let active = true;
+
+    async function loadRules() {
+      setAlertsLoading(true);
+      setAlertsError(null);
+
+      const result = await supabase
+        .from("alert_rules")
+        .select(
+          "id,user_id,location_id,rule_type,comparator,threshold,horizon_days,enabled,created_at,updated_at"
+        )
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (!active) return;
+      if (result.error) {
+        setAlertsError(result.error.message);
+        setAlertsLoading(false);
+        return;
+      }
+
+      setAlertRules((result.data ?? []) as AlertRuleRow[]);
+      setAlertsLoading(false);
+    }
+
+    void loadRules();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
+
+  const alertSnapshot = useMemo(() => {
+    if (!user) return null;
+    if (!selectedLocationId) return { applicable: [], triggers: [] as Array<{ ruleId: string; date: string; value: number }> };
+
+    const applicable = alertRules.filter(
+      (r) =>
+        r.enabled && (r.location_id == null || r.location_id === selectedLocationId)
+    );
+
+    const triggers: Array<{ ruleId: string; date: string; value: number }> = [];
+
+    for (const r of applicable) {
+      for (const d of dailyForecasts.slice(0, r.horizon_days)) {
+        const v =
+          r.rule_type === "precipitation"
+            ? d.precipitation_sum_mm
+            : r.rule_type === "temperature_max"
+              ? d.temp_max_c
+              : d.wind_speed_max_kmh;
+        if (v == null || !Number.isFinite(v)) continue;
+        if (compareValue(r.comparator, v, r.threshold)) {
+          triggers.push({ ruleId: r.id, date: d.forecast_date, value: v });
+          break;
+        }
+      }
+    }
+
+    return { applicable, triggers };
+  }, [user, selectedLocationId, alertRules, dailyForecasts]);
 
   const tempDisplay = useMemo(() => {
     if (!currentWeather) return "—";
@@ -996,6 +1109,95 @@ export function ProDashboard({ user }: { user: User | null }) {
               onSelectedLocationIdChange={setSelectedLocationId}
               onSetDefaultLocation={setDefaultLocation}
             />
+          </GlassCard>
+
+          <GlassCard
+            icon={<IconBell className="h-4 w-4" />}
+            title="Alert Snapshot"
+            subtitle="Triggers for the selected city"
+          >
+            {!user ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Sign in to enable alert rules.
+              </p>
+            ) : alertsLoading ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">Loading…</p>
+            ) : alertsError ? (
+              <div className="rounded-xl border border-red-200/70 bg-red-50/80 p-3 text-xs text-red-700 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300 dark:ring-white/10">
+                {alertsError}
+              </div>
+            ) : !selectedLocationId ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                Pick a city to see triggers.
+              </p>
+            ) : alertSnapshot && alertSnapshot.applicable.length === 0 ? (
+              <div className="space-y-2">
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                  No enabled rules apply to this city.
+                </p>
+                <Link
+                  href="/alerts"
+                  className="inline-flex rounded-full px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-black/[0.04] dark:text-zinc-400 dark:hover:bg-white/[0.06]"
+                >
+                  Create rules →
+                </Link>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <StatusPill
+                    label={`Enabled: ${alertSnapshot?.applicable.length ?? 0}`}
+                    tone="neutral"
+                  />
+                  <StatusPill
+                    label={`Triggered: ${alertSnapshot?.triggers.length ?? 0}`}
+                    tone={(alertSnapshot?.triggers.length ?? 0) > 0 ? "bad" : "good"}
+                  />
+                </div>
+
+                <ul className="space-y-2">
+                  {(alertSnapshot?.applicable ?? []).slice(0, 3).map((r) => {
+                    const hit = (alertSnapshot?.triggers ?? []).find(
+                      (t) => t.ruleId === r.id
+                    );
+                    return (
+                      <li
+                        key={r.id}
+                        className="rounded-xl border border-zinc-200/80 bg-white/60 px-3 py-2 text-sm shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                              {ruleTypeLabel(r.rule_type)} {comparatorLabel(r.comparator)}{" "}
+                              {r.threshold}
+                            </p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              next {r.horizon_days} days
+                            </p>
+                          </div>
+                          {hit ? (
+                            <span className="rounded-full bg-red-500/10 px-2 py-1 text-[11px] font-medium text-red-700 dark:bg-red-500/15 dark:text-red-300">
+                              {hit.date}
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+                              Clear
+                            </span>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                <Link
+                  href="/alerts"
+                  className="inline-flex rounded-full px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-black/[0.04] dark:text-zinc-400 dark:hover:bg-white/[0.06]"
+                >
+                  Manage rules →
+                </Link>
+              </div>
+            )}
           </GlassCard>
 
           <GlassCard

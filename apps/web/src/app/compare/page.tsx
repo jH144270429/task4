@@ -18,6 +18,174 @@ type DailyForecastRow = {
   wind_speed_max_kmh: number | null;
 };
 
+function MultiCityTempChart({
+  dates,
+  locations,
+  byCityAndDate,
+  temperatureUnit,
+}: {
+  dates: string[];
+  locations: LocationRow[];
+  byCityAndDate: Map<string, DailyForecastRow>;
+  temperatureUnit: TemperatureUnit;
+}) {
+  const palette = ["#0f172a", "#2563eb", "#16a34a", "#a855f7"];
+  const series = locations.map((l) => {
+    const values = dates.map((d) => {
+      const row = byCityAndDate.get(`${l.id}:${d}`);
+      const v = row?.temp_max_c;
+      if (v == null || !Number.isFinite(v)) return null;
+      return temperatureUnit === "c" ? v : cToF(v);
+    });
+    return { location: l, values };
+  });
+
+  const allValues = series.flatMap((s) => s.values).filter((v): v is number => v != null);
+  if (allValues.length === 0) {
+    return (
+      <div className="rounded-xl border border-zinc-200/80 bg-white/60 p-3 text-sm text-zinc-600 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:text-zinc-400 dark:ring-white/10">
+        Not enough temperature data for chart.
+      </div>
+    );
+  }
+
+  const min = Math.min(...allValues);
+  const max = Math.max(...allValues);
+  const pad = Math.max(1, (max - min) * 0.12);
+  const yMin = min - pad;
+  const yMax = max + pad;
+  const range = yMax - yMin || 1;
+
+  const left = 34;
+  const right = 10;
+  const top = 10;
+  const bottom = 28;
+  const width = 520;
+  const height = 200;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+
+  const yTicks = [
+    { v: yMax, label: formatNumber(yMax, 0) },
+    { v: yMin + range / 2, label: formatNumber(yMin + range / 2, 0) },
+    { v: yMin, label: formatNumber(yMin, 0) },
+  ];
+
+  const xTicks = dates.map((d, idx) => {
+    const label = idx === 0 || idx === dates.length - 1 || idx === Math.floor(dates.length / 2)
+      ? formatDateISO(d).split(" ").slice(-2).join(" ")
+      : "";
+    return { idx, label };
+  });
+
+  return (
+    <div className="rounded-xl border border-zinc-200/80 bg-white/60 p-3 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs text-zinc-500">Max temperature (next 7 days)</p>
+          <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">
+            {formatNumber(min, 1)}–{formatNumber(max, 1)}°{temperatureUnit.toUpperCase()}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {series.map((s, idx) => (
+            <span
+              key={s.location.id}
+              className="inline-flex items-center gap-2 rounded-full bg-black/[0.06] px-3 py-1 text-xs font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100"
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: palette[idx % palette.length] }}
+              />
+              {s.location.name}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <svg viewBox={`0 0 ${width} ${height}`} className="mt-3 h-44 w-full">
+        <g className="text-zinc-900/10 dark:text-white/10" stroke="currentColor">
+          <line x1={left} y1={top} x2={width - right} y2={top} strokeWidth="1" />
+          <line
+            x1={left}
+            y1={top + plotHeight / 2}
+            x2={width - right}
+            y2={top + plotHeight / 2}
+            strokeWidth="1"
+          />
+          <line
+            x1={left}
+            y1={top + plotHeight}
+            x2={width - right}
+            y2={top + plotHeight}
+            strokeWidth="1"
+          />
+        </g>
+
+        <g className="text-zinc-500" fill="currentColor">
+          {yTicks.map((t, i) => {
+            const y = top + (1 - (t.v - yMin) / range) * plotHeight;
+            return (
+              <text key={i} x={left - 6} y={y + 3} fontSize="9" textAnchor="end">
+                {t.label}
+              </text>
+            );
+          })}
+        </g>
+
+        <g className="text-zinc-500" fill="currentColor">
+          {xTicks.map((t) => {
+            const x = left + (t.idx / Math.max(1, dates.length - 1)) * plotWidth;
+            return (
+              <g key={t.idx}>
+                <line
+                  x1={x}
+                  y1={top + plotHeight}
+                  x2={x}
+                  y2={top + plotHeight + 3}
+                  stroke="currentColor"
+                  strokeWidth="1"
+                  opacity="0.35"
+                />
+                {t.label ? (
+                  <text x={x} y={height - 8} fontSize="9" textAnchor="middle">
+                    {t.label}
+                  </text>
+                ) : null}
+              </g>
+            );
+          })}
+        </g>
+
+        {series.map((s, idx) => {
+          const points = s.values
+            .map((v, i) => {
+              if (v == null) return null;
+              const x = left + (i / Math.max(1, dates.length - 1)) * plotWidth;
+              const y = top + (1 - (v - yMin) / range) * plotHeight;
+              return `${x.toFixed(2)},${y.toFixed(2)}`;
+            })
+            .filter(Boolean)
+            .join(" ");
+          const color = palette[idx % palette.length];
+          return (
+            <polyline
+              key={s.location.id}
+              points={points}
+              fill="none"
+              stroke={color}
+              strokeWidth="2.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+              opacity={0.9}
+            />
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function GlassCard({
   icon,
   title,
@@ -282,69 +450,78 @@ export default function ComparePage() {
             No daily forecasts yet. Run updated SQL and restart worker.
           </p>
         ) : (
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-sm">
-              <thead>
-                <tr className="text-left text-xs text-zinc-500">
-                  <th className="px-3">Day</th>
-                  {selectedLocations.map((l) => (
-                    <th key={l.id} className="px-3">
-                      {l.name}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {dates.slice(0, 15).map((date) => (
-                  <tr
-                    key={date}
-                    className="rounded-xl border border-zinc-200/80 bg-white/60 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10"
-                  >
-                    <td className="px-3 py-2 font-medium text-zinc-900 dark:text-zinc-50">
-                      {formatDateISO(date)}
-                    </td>
-                    {selectedLocations.map((l) => {
-                      const r = byCityAndDate.get(`${l.id}:${date}`);
-                      const max =
-                        r?.temp_max_c == null
-                          ? null
-                          : temperatureUnit === "c"
-                            ? r.temp_max_c
-                            : cToF(r.temp_max_c);
-                      const min =
-                        r?.temp_min_c == null
-                          ? null
-                          : temperatureUnit === "c"
-                            ? r.temp_min_c
-                            : cToF(r.temp_min_c);
-                      return (
-                        <td key={l.id} className="px-3 py-2">
-                          <div className="text-zinc-900 dark:text-zinc-50">
-                            {max == null
-                              ? "—"
-                              : `${formatNumber(max, 1)}°${temperatureUnit.toUpperCase()}`}{" "}
-                            /{" "}
-                            {min == null
-                              ? "—"
-                              : `${formatNumber(min, 1)}°${temperatureUnit.toUpperCase()}`}
-                          </div>
-                          <div className="mt-0.5 text-xs text-zinc-500">
-                            {r?.precipitation_probability_max == null
-                              ? "—"
-                              : `${formatNumber(r.precipitation_probability_max)}%`}{" "}
-                            rain ·{" "}
-                            {r?.wind_speed_max_kmh == null
-                              ? "—"
-                              : `${formatNumber(r.wind_speed_max_kmh, 1)} km/h`}{" "}
-                            wind
-                          </div>
-                        </td>
-                      );
-                    })}
+          <div className="mt-4 space-y-4">
+            <MultiCityTempChart
+              dates={dates.slice(0, 7)}
+              locations={selectedLocations}
+              byCityAndDate={byCityAndDate}
+              temperatureUnit={temperatureUnit}
+            />
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-zinc-500">
+                    <th className="px-3">Day</th>
+                    {selectedLocations.map((l) => (
+                      <th key={l.id} className="px-3">
+                        {l.name}
+                      </th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {dates.slice(0, 15).map((date) => (
+                    <tr
+                      key={date}
+                      className="rounded-xl border border-zinc-200/80 bg-white/60 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10"
+                    >
+                      <td className="px-3 py-2 font-medium text-zinc-900 dark:text-zinc-50">
+                        {formatDateISO(date)}
+                      </td>
+                      {selectedLocations.map((l) => {
+                        const r = byCityAndDate.get(`${l.id}:${date}`);
+                        const max =
+                          r?.temp_max_c == null
+                            ? null
+                            : temperatureUnit === "c"
+                              ? r.temp_max_c
+                              : cToF(r.temp_max_c);
+                        const min =
+                          r?.temp_min_c == null
+                            ? null
+                            : temperatureUnit === "c"
+                              ? r.temp_min_c
+                              : cToF(r.temp_min_c);
+                        return (
+                          <td key={l.id} className="px-3 py-2">
+                            <div className="text-zinc-900 dark:text-zinc-50">
+                              {max == null
+                                ? "—"
+                                : `${formatNumber(max, 1)}°${temperatureUnit.toUpperCase()}`}{" "}
+                              /{" "}
+                              {min == null
+                                ? "—"
+                                : `${formatNumber(min, 1)}°${temperatureUnit.toUpperCase()}`}
+                            </div>
+                            <div className="mt-0.5 text-xs text-zinc-500">
+                              {r?.precipitation_probability_max == null
+                                ? "—"
+                                : `${formatNumber(r.precipitation_probability_max)}%`}{" "}
+                              rain ·{" "}
+                              {r?.wind_speed_max_kmh == null
+                                ? "—"
+                                : `${formatNumber(r.wind_speed_max_kmh, 1)} km/h`}{" "}
+                              wind
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </GlassCard>
