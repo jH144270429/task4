@@ -8,6 +8,7 @@ import { cToF, formatDateISO, formatNumber } from "@/components/pro/format";
 import { IconCompare } from "@/components/ui/icons";
 
 type TemperatureUnit = "c" | "f";
+type Metric = "temperature" | "rain" | "wind";
 
 type DailyForecastRow = {
   location_id: string;
@@ -18,24 +19,33 @@ type DailyForecastRow = {
   wind_speed_max_kmh: number | null;
 };
 
-function MultiCityTempChart({
+function MultiCityMetricChart({
   dates,
   locations,
   byCityAndDate,
   temperatureUnit,
+  metric,
 }: {
   dates: string[];
   locations: LocationRow[];
   byCityAndDate: Map<string, DailyForecastRow>;
   temperatureUnit: TemperatureUnit;
+  metric: Metric;
 }) {
   const palette = ["#0f172a", "#2563eb", "#16a34a", "#a855f7"];
   const series = locations.map((l) => {
     const values = dates.map((d) => {
       const row = byCityAndDate.get(`${l.id}:${d}`);
-      const v = row?.temp_max_c;
-      if (v == null || !Number.isFinite(v)) return null;
-      return temperatureUnit === "c" ? v : cToF(v);
+      if (!row) return null;
+      const raw =
+        metric === "temperature"
+          ? row.temp_max_c
+          : metric === "rain"
+            ? row.precipitation_probability_max
+            : row.wind_speed_max_kmh;
+      if (raw == null || !Number.isFinite(raw)) return null;
+      if (metric === "temperature") return temperatureUnit === "c" ? raw : cToF(raw);
+      return raw;
     });
     return { location: l, values };
   });
@@ -44,14 +54,14 @@ function MultiCityTempChart({
   if (allValues.length === 0) {
     return (
       <div className="rounded-xl border border-zinc-200/80 bg-white/60 p-3 text-sm text-zinc-600 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:text-zinc-400 dark:ring-white/10">
-        Not enough temperature data for chart.
+        Not enough data for chart.
       </div>
     );
   }
 
-  const min = Math.min(...allValues);
-  const max = Math.max(...allValues);
-  const pad = Math.max(1, (max - min) * 0.12);
+  const min = metric === "rain" ? 0 : Math.min(...allValues);
+  const max = metric === "rain" ? 100 : Math.max(...allValues);
+  const pad = metric === "rain" ? 0 : Math.max(1, (max - min) * 0.12);
   const yMin = min - pad;
   const yMax = max + pad;
   const range = yMax - yMin || 1;
@@ -82,9 +92,19 @@ function MultiCityTempChart({
     <div className="rounded-xl border border-zinc-200/80 bg-white/60 p-3 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-xs text-zinc-500">Max temperature (next 7 days)</p>
+          <p className="text-xs text-zinc-500">
+            {metric === "temperature"
+              ? "Max temperature (next 7 days)"
+              : metric === "rain"
+                ? "Rain probability (next 7 days)"
+                : "Wind speed (next 7 days)"}
+          </p>
           <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">
-            {formatNumber(min, 1)}–{formatNumber(max, 1)}°{temperatureUnit.toUpperCase()}
+            {metric === "temperature"
+              ? `${formatNumber(min, 1)}–${formatNumber(max, 1)}°${temperatureUnit.toUpperCase()}`
+              : metric === "rain"
+                ? `${formatNumber(min, 0)}–${formatNumber(max, 0)}%`
+                : `${formatNumber(min, 0)}–${formatNumber(max, 0)} km/h`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -222,6 +242,7 @@ function GlassCard({
 export default function ComparePage() {
   const { user, loading: authLoading } = useAuth();
   const [temperatureUnit, setTemperatureUnit] = useState<TemperatureUnit>("c");
+  const [metric, setMetric] = useState<Metric>("temperature");
   const [locations, setLocations] = useState<LocationRow[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [forecasts, setForecasts] = useState<DailyForecastRow[]>([]);
@@ -403,7 +424,47 @@ export default function ComparePage() {
             })}
           </div>
 
-          <div className="flex items-center gap-2 rounded-full border border-zinc-200/80 bg-white/60 p-1 shadow-sm ring-1 ring-black/5 dark:border-zinc-800/80 dark:bg-black/40 dark:ring-white/10">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 rounded-full border border-zinc-200/80 bg-white/60 p-1 shadow-sm ring-1 ring-black/5 dark:border-zinc-800/80 dark:bg-black/40 dark:ring-white/10">
+              <button
+                type="button"
+                onClick={() => setMetric("temperature")}
+                className={[
+                  "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                  metric === "temperature"
+                    ? "bg-black/[0.06] text-zinc-900 dark:bg-white/[0.10] dark:text-zinc-50"
+                    : "text-zinc-600 hover:bg-black/[0.04] dark:text-zinc-400 dark:hover:bg-white/[0.06]",
+                ].join(" ")}
+              >
+                Temp
+              </button>
+              <button
+                type="button"
+                onClick={() => setMetric("rain")}
+                className={[
+                  "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                  metric === "rain"
+                    ? "bg-black/[0.06] text-zinc-900 dark:bg-white/[0.10] dark:text-zinc-50"
+                    : "text-zinc-600 hover:bg-black/[0.04] dark:text-zinc-400 dark:hover:bg-white/[0.06]",
+                ].join(" ")}
+              >
+                Rain
+              </button>
+              <button
+                type="button"
+                onClick={() => setMetric("wind")}
+                className={[
+                  "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+                  metric === "wind"
+                    ? "bg-black/[0.06] text-zinc-900 dark:bg-white/[0.10] dark:text-zinc-50"
+                    : "text-zinc-600 hover:bg-black/[0.04] dark:text-zinc-400 dark:hover:bg-white/[0.06]",
+                ].join(" ")}
+              >
+                Wind
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 rounded-full border border-zinc-200/80 bg-white/60 p-1 shadow-sm ring-1 ring-black/5 dark:border-zinc-800/80 dark:bg-black/40 dark:ring-white/10">
             <button
               type="button"
               onClick={() => setTemperatureUnit("c")}
@@ -429,6 +490,7 @@ export default function ComparePage() {
               ℉
             </button>
           </div>
+          </div>
         </div>
 
         {error ? (
@@ -451,11 +513,12 @@ export default function ComparePage() {
           </p>
         ) : (
           <div className="mt-4 space-y-4">
-            <MultiCityTempChart
+            <MultiCityMetricChart
               dates={dates.slice(0, 7)}
               locations={selectedLocations}
               byCityAndDate={byCityAndDate}
               temperatureUnit={temperatureUnit}
+              metric={metric}
             />
 
             <div className="overflow-x-auto">

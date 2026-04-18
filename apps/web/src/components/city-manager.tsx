@@ -5,6 +5,8 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import type { LocationRow } from "@/lib/types/db";
 import { useAuth } from "@/components/auth-provider";
 import { IconMapPin, IconPlus, IconSearch, IconStar, IconTrash } from "@/components/ui/icons";
+import { WeatherIcon } from "@/components/ui/weather-icons";
+import { formatNumber } from "@/components/pro/format";
 
 type Props = {
   onFavoriteLocationIdsChange?: (locationIds: string[]) => void;
@@ -19,10 +21,26 @@ type SearchResult = {
   timezone: string;
 };
 
+type CurrentWeatherLiteRow = {
+  location_id: string;
+  temperature_c: number | null;
+  weather_code: number | null;
+  is_day: boolean | null;
+  updated_at: string;
+};
+
+function minutesSince(iso: string | null | undefined) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, Math.round((Date.now() - t) / 60000));
+}
+
 export function CityManager({ onFavoriteLocationIdsChange }: Props) {
   const { user, loading: authLoading } = useAuth();
   const [locations, setLocations] = useState<LocationRow[]>([]);
   const [favoriteLocationIds, setFavoriteLocationIds] = useState<string[]>([]);
+  const [currentById, setCurrentById] = useState<Record<string, CurrentWeatherLiteRow>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selectedLocationId, setSelectedLocationId] = useState("");
@@ -105,6 +123,39 @@ export function CityManager({ onFavoriteLocationIdsChange }: Props) {
       active = false;
     };
   }, [authLoading, user?.id]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setCurrentById({});
+      return;
+    }
+    if (favoriteLocationIds.length === 0) {
+      setCurrentById({});
+      return;
+    }
+
+    const supabase = getSupabaseBrowserClient();
+    let active = true;
+
+    supabase
+      .from("current_weather")
+      .select("location_id,temperature_c,weather_code,is_day,updated_at")
+      .in("location_id", favoriteLocationIds)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) return;
+        const next: Record<string, CurrentWeatherLiteRow> = {};
+        for (const row of (data ?? []) as CurrentWeatherLiteRow[]) {
+          next[row.location_id] = row;
+        }
+        setCurrentById(next);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [authLoading, user?.id, favoriteLocationIds.join("|")]);
 
   useEffect(() => {
     if (!user) return;
@@ -364,31 +415,64 @@ export function CityManager({ onFavoriteLocationIdsChange }: Props) {
               </p>
             ) : (
               <ul className="space-y-2">
-                {favoriteLocations.map((l) => (
-                  <li
-                    key={l.id}
-                    className="flex items-center justify-between rounded-xl border border-zinc-200/80 bg-white/60 px-3 py-2 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10"
-                  >
-                    <span className="flex min-w-0 items-center gap-2 text-sm text-zinc-900 dark:text-zinc-50">
-                      <span className="text-zinc-500 dark:text-zinc-400">
-                        <IconMapPin className="h-4 w-4" />
-                      </span>
-                      <span className="truncate">
-                        {l.name}
-                        {l.country ? `, ${l.country}` : ""}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeFavorite(l.id)}
-                      disabled={saving}
-                      className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-sm font-medium text-zinc-600 hover:bg-black/[0.04] hover:text-zinc-900 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-zinc-50"
+                {favoriteLocations.map((l) => {
+                  const cw = currentById[l.id] ?? null;
+                  const age = minutesSince(cw?.updated_at);
+                  return (
+                    <li
+                      key={l.id}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200/80 bg-white/60 px-3 py-2 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10"
                     >
-                      <IconTrash className="h-4 w-4" />
-                      Remove
-                    </button>
-                  </li>
-                ))}
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span className="text-zinc-500 dark:text-zinc-400">
+                          <IconMapPin className="h-4 w-4" />
+                        </span>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-50">
+                            {l.name}
+                            {l.country ? `, ${l.country}` : ""}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                            <span className="rounded-full bg-black/[0.06] px-2 py-0.5 font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100">
+                              {l.timezone}
+                            </span>
+                            <span>
+                              {l.latitude >= 0 ? "N" : "S"}
+                              {formatNumber(Math.abs(l.latitude), 2)} ·{" "}
+                              {l.longitude >= 0 ? "E" : "W"}
+                              {formatNumber(Math.abs(l.longitude), 2)}
+                            </span>
+                            {age == null ? null : <span>· {age}m</span>}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {cw ? (
+                          <span className="hidden items-center gap-2 rounded-full bg-black/[0.06] px-3 py-1 text-xs font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100 sm:inline-flex">
+                            <WeatherIcon
+                              weatherCode={cw.weather_code}
+                              isDay={cw.is_day}
+                              className="h-4 w-4"
+                            />
+                            {cw.temperature_c == null
+                              ? "—"
+                              : `${formatNumber(cw.temperature_c, 1)}°C`}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => removeFavorite(l.id)}
+                          disabled={saving}
+                          className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-sm font-medium text-zinc-600 hover:bg-black/[0.04] hover:text-zinc-900 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-zinc-50"
+                        >
+                          <IconTrash className="h-4 w-4" />
+                          Remove
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

@@ -83,6 +83,70 @@ function metricUnit(t: RuleType) {
   return "km/h";
 }
 
+function Sparkline({
+  values,
+  threshold,
+  highlight,
+}: {
+  values: Array<number | null>;
+  threshold: number;
+  highlight: boolean;
+}) {
+  const width = 140;
+  const height = 34;
+  const left = 4;
+  const right = 4;
+  const top = 4;
+  const bottom = 4;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+
+  const finite = values.filter((v): v is number => v != null && Number.isFinite(v));
+  const all = finite.length ? [...finite, threshold] : [threshold];
+  const min = Math.min(...all);
+  const max = Math.max(...all);
+  const pad = Math.max(0.5, (max - min) * 0.15);
+  const yMin = min - pad;
+  const yMax = max + pad;
+  const range = yMax - yMin || 1;
+
+  const points = values
+    .map((v, i) => {
+      if (v == null || !Number.isFinite(v)) return null;
+      const x = left + (i / Math.max(1, values.length - 1)) * plotWidth;
+      const y = top + (1 - (v - yMin) / range) * plotHeight;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .filter(Boolean)
+    .join(" ");
+
+  const yThreshold = top + (1 - (threshold - yMin) / range) * plotHeight;
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="h-9 w-40">
+      <rect x="0" y="0" width={width} height={height} fill="transparent" />
+      <line
+        x1={left}
+        y1={yThreshold}
+        x2={width - right}
+        y2={yThreshold}
+        stroke="currentColor"
+        className="text-zinc-900/15 dark:text-white/15"
+        strokeWidth="1"
+      />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={highlight ? "#ef4444" : "#0f172a"}
+        strokeWidth="2"
+        strokeLinejoin="round"
+        strokeLinecap="round"
+        opacity={highlight ? 0.95 : 0.75}
+      />
+    </svg>
+  );
+}
+
 export default function AlertsPage() {
   const { user, loading: authLoading } = useAuth();
   const [rules, setRules] = useState<AlertRuleRow[]>([]);
@@ -700,6 +764,38 @@ export default function AlertsPage() {
                                   ? " · no hits"
                                   : ""}
                             </p>
+                            {forecasts.length === 0 ? null : (
+                              <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                                <div className="min-w-0 text-xs text-zinc-500">
+                                  <span className="rounded-full bg-black/[0.06] px-2 py-1 font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100">
+                                    threshold {r.threshold}
+                                    {metricUnit(r.rule_type)}
+                                  </span>
+                                </div>
+                                <Sparkline
+                                  values={(() => {
+                                    const baseLocationId =
+                                      r.location_id ??
+                                      preview?.next?.locationId ??
+                                      locations[0]?.id ??
+                                      null;
+                                    if (!baseLocationId) return [];
+                                    const rows = forecastByLocation.get(baseLocationId) ?? [];
+                                    return rows.slice(0, r.horizon_days).map((d) => {
+                                      const v =
+                                        r.rule_type === "precipitation"
+                                          ? d.precipitation_sum_mm
+                                          : r.rule_type === "temperature_max"
+                                            ? d.temp_max_c
+                                            : d.wind_speed_max_kmh;
+                                      return v == null || !Number.isFinite(v) ? null : v;
+                                    });
+                                  })()}
+                                  threshold={r.threshold}
+                                  highlight={(preview?.total ?? 0) > 0}
+                                />
+                              </div>
+                            )}
                             {forecasts.length === 0 ? (
                               <p className="mt-2 text-xs text-zinc-500">
                                 No forecast data yet.
