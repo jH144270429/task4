@@ -90,6 +90,16 @@ Deployment:
    - verify personalization works
    - verify realtime updates appear without refresh
 
+## Advanced Goals (Optional, Weather Pulse)
+- Multiple data sources: combine Open-Meteo weather with optional APIs (air quality, pollen, UV details, severe alerts) via the worker, stored in normalized tables
+- Historical views: keep rolling history for hourly/daily forecasts and render “last 7/30 days” trend pages (temperature/rain/wind) instead of only “latest”
+- Notifications / alerting: persist triggered alerts (notifications table), show an inbox in the UI, and optionally send email notifications through a provider
+- Visualization upgrades:
+  - Charts: multi-metric charts (temp/rain/wind) with axes, tooltips, and comparisons across cities
+  - Graphics: weather icons, condition badges, and summary “score” cards (comfort/outdoor/commute)
+  - Maps: plot saved cities on a lightweight map (SVG projection), add precipitation/wind overlays, and optionally a heatmap view by region
+- Worker observability: show last poll time, status, and error counts in the frontend (sync_runs dashboard), with drill-down per location
+
 ## Data Model
 
 ### locations
