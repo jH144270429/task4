@@ -684,6 +684,135 @@ function HourlyTrend({
   );
 }
 
+function GeoMap({
+  locations,
+  selectedLocationId,
+}: {
+  locations: LocationRow[];
+  selectedLocationId: string;
+}) {
+  const width = 520;
+  const height = 260;
+  const pad = 10;
+  const plotWidth = width - pad * 2;
+  const plotHeight = height - pad * 2;
+
+  const points = useMemo(() => {
+    return locations
+      .filter((l) => Number.isFinite(l.latitude) && Number.isFinite(l.longitude))
+      .map((l) => {
+        const x = pad + ((l.longitude + 180) / 360) * plotWidth;
+        const y = pad + ((90 - l.latitude) / 180) * plotHeight;
+        return { id: l.id, name: l.name, country: l.country, x, y };
+      });
+  }, [locations, plotWidth, plotHeight]);
+
+  const selected = useMemo(
+    () => locations.find((l) => l.id === selectedLocationId) ?? null,
+    [locations, selectedLocationId]
+  );
+
+  const meridians = [-120, -60, 0, 60, 120];
+  const parallels = [-60, -30, 0, 30, 60];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs text-zinc-500">Cities</p>
+          <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-50">
+            {locations.length}
+            {selected ? (
+              <span className="text-zinc-500">
+                {" "}
+                · selected {selected.name}
+                {selected.country ? `, ${selected.country}` : ""}
+              </span>
+            ) : null}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-2 rounded-full bg-black/[0.06] px-3 py-1 text-xs font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100">
+            <span className="h-2 w-2 rounded-full bg-zinc-900 dark:bg-white" />
+            City
+          </span>
+          <span className="inline-flex items-center gap-2 rounded-full bg-black/[0.06] px-3 py-1 text-xs font-medium text-zinc-800 dark:bg-white/[0.10] dark:text-zinc-100">
+            <span className="h-2 w-2 rounded-full bg-blue-600" />
+            Selected
+          </span>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-xl border border-zinc-200/80 bg-white/60 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10">
+        <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full">
+          <rect x="0" y="0" width={width} height={height} fill="transparent" />
+
+          <g className="text-zinc-900/10 dark:text-white/10" stroke="currentColor">
+            {meridians.map((lon) => {
+              const x = pad + ((lon + 180) / 360) * plotWidth;
+              return (
+                <line
+                  key={lon}
+                  x1={x}
+                  y1={pad}
+                  x2={x}
+                  y2={height - pad}
+                  strokeWidth="1"
+                />
+              );
+            })}
+            {parallels.map((lat) => {
+              const y = pad + ((90 - lat) / 180) * plotHeight;
+              return (
+                <line
+                  key={lat}
+                  x1={pad}
+                  y1={y}
+                  x2={width - pad}
+                  y2={y}
+                  strokeWidth="1"
+                />
+              );
+            })}
+          </g>
+
+          <g className="text-zinc-500" fill="currentColor">
+            <text x={pad} y={height - 8} fontSize="9">
+              -180°
+            </text>
+            <text x={width - pad} y={height - 8} fontSize="9" textAnchor="end">
+              180°
+            </text>
+            <text x={width - pad} y={pad + 10} fontSize="9" textAnchor="end">
+              90°N
+            </text>
+            <text x={width - pad} y={height - pad - 2} fontSize="9" textAnchor="end">
+              90°S
+            </text>
+          </g>
+
+          <g>
+            {points.map((p) => {
+              const selected = p.id === selectedLocationId;
+              return (
+                <circle
+                  key={p.id}
+                  cx={p.x}
+                  cy={p.y}
+                  r={selected ? 5 : 3.5}
+                  fill={selected ? "#2563eb" : "currentColor"}
+                  className={selected ? "" : "text-zinc-900 dark:text-white"}
+                  opacity={selected ? 0.95 : 0.65}
+                />
+              );
+            })}
+          </g>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 export function ProDashboard({ user }: { user: User | null }) {
   const [selectedLocationId, setSelectedLocationId] = useState("");
   const [temperatureUnit, setTemperatureUnit] = useState<TemperatureUnit>("c");
@@ -694,6 +823,10 @@ export function ProDashboard({ user }: { user: User | null }) {
   const [alertRules, setAlertRules] = useState<AlertRuleRow[]>([]);
   const [alertsLoading, setAlertsLoading] = useState(false);
   const [alertsError, setAlertsError] = useState<string | null>(null);
+
+  const [mapLocations, setMapLocations] = useState<LocationRow[]>([]);
+  const [mapLoading, setMapLoading] = useState(false);
+  const [mapError, setMapError] = useState<string | null>(null);
 
   const [currentWeather, setCurrentWeather] = useState<CurrentWeatherRow | null>(
     null
@@ -706,6 +839,96 @@ export function ProDashboard({ user }: { user: User | null }) {
   const today = dailyForecasts[0] ?? null;
   const outdoor = useMemo(() => computeOutdoorScore(dailyForecasts), [dailyForecasts]);
   const defaultLocationId = preferences?.default_location_id ?? null;
+
+  useEffect(() => {
+    const supabase = getSupabaseBrowserClient();
+    let active = true;
+
+    async function load() {
+      setMapLoading(true);
+      setMapError(null);
+
+      if (user) {
+        const result = await supabase
+          .from("favorite_locations")
+          .select(
+            "location_id, locations (id,name,country,latitude,longitude,timezone,created_at)"
+          )
+          .eq("user_id", user.id);
+
+        if (!active) return;
+        if (result.error) {
+          setMapError(result.error.message);
+          setMapLocations([]);
+          setMapLoading(false);
+          return;
+        }
+
+        const rows = (result.data ?? [])
+          .map((r) => r.locations)
+          .filter(Boolean) as unknown as LocationRow[];
+        const favoriteIds = rows.map((r) => r.id);
+        if (favoriteIds.length === 0) {
+          setMapLocations([]);
+          setMapLoading(false);
+          return;
+        }
+
+        const availableResult = await supabase
+          .from("current_weather")
+          .select("location_id")
+          .in("location_id", favoriteIds);
+
+        if (!active) return;
+        if (availableResult.error) {
+          setMapError(availableResult.error.message);
+          setMapLocations([]);
+          setMapLoading(false);
+          return;
+        }
+
+        const availableIds = new Set(
+          (availableResult.data ?? []).map((r) => r.location_id)
+        );
+        const availableRows = rows
+          .filter((r) => availableIds.has(r.id))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        setMapLocations(availableRows);
+        setMapLoading(false);
+        return;
+      }
+
+      const result = await supabase
+        .from("current_weather")
+        .select(
+          "location_id, locations (id,name,country,latitude,longitude,timezone,created_at)"
+        )
+        .order("updated_at", { ascending: false })
+        .limit(24);
+
+      if (!active) return;
+      if (result.error) {
+        setMapError(result.error.message);
+        setMapLocations([]);
+        setMapLoading(false);
+        return;
+      }
+
+      const rows = (result.data ?? [])
+        .map((r) => r.locations)
+        .filter(Boolean) as unknown as LocationRow[];
+      rows.sort((a, b) => a.name.localeCompare(b.name));
+      setMapLocations(rows);
+      setMapLoading(false);
+    }
+
+    void load();
+
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user) {
@@ -1435,6 +1658,29 @@ export function ProDashboard({ user }: { user: User | null }) {
                   )}
                 </div>
               </div>
+            )}
+          </GlassCard>
+
+          <GlassCard
+            icon={<IconMapPin className="h-4 w-4" />}
+            title="Map"
+            subtitle="Latitude/longitude overview"
+          >
+            {mapLoading ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">Loading…</p>
+            ) : mapError ? (
+              <div className="rounded-xl border border-red-200/70 bg-red-50/80 p-3 text-xs text-red-700 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300 dark:ring-white/10">
+                {mapError}
+              </div>
+            ) : mapLocations.length === 0 ? (
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                No cities to plot yet.
+              </p>
+            ) : (
+              <GeoMap
+                locations={mapLocations}
+                selectedLocationId={selectedLocationId}
+              />
             )}
           </GlassCard>
 
