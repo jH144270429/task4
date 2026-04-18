@@ -120,3 +120,42 @@ export function IconSparkles(props: IconProps) {
     </BaseIcon>
   );
 }
+
+export function IconSearch(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" />
+      <path d="M16.2 16.2 21 21" />
+    </BaseIcon>
+  );
+}
+
+export function IconPlus(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </BaseIcon>
+  );
+}
+
+export function IconStar(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M12 3.2 14.6 8.5l5.9.9-4.2 4.1 1 5.9L12 16.7 6.7 19.4l1-5.9-4.2-4.1 5.9-.9L12 3.2Z" />
+    </BaseIcon>
+  );
+}
+
+export function IconTrash(props: IconProps) {
+  return (
+    <BaseIcon {...props}>
+      <path d="M9 4h6" />
+      <path d="M10 4 10.6 3h2.8L14 4" />
+      <path d="M6 7h12" />
+      <path d="M8 7l1 14h6l1-14" />
+      <path d="M10.5 10.2v7.3" />
+      <path d="M13.5 10.2v7.3" />
+    </BaseIcon>
+  );
+}

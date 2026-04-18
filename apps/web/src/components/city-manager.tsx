@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/browser";
 import type { LocationRow } from "@/lib/types/db";
 import { useAuth } from "@/components/auth-provider";
+import { IconMapPin, IconPlus, IconSearch, IconStar, IconTrash } from "@/components/ui/icons";
 
 type Props = {
   onFavoriteLocationIdsChange?: (locationIds: string[]) => void;
@@ -256,7 +257,10 @@ export function CityManager({ onFavoriteLocationIdsChange }: Props) {
   return (
     <section className="rounded-2xl border border-white/60 bg-white/70 p-4 shadow-sm ring-1 ring-black/5 backdrop-blur-xl dark:border-zinc-800/70 dark:bg-black/40 dark:ring-white/10">
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+        <h2 className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+          <span className="text-zinc-500 dark:text-zinc-400">
+            <IconStar className="h-4 w-4" />
+          </span>
           My Cities
         </h2>
         {saving ? (
@@ -276,7 +280,10 @@ export function CityManager({ onFavoriteLocationIdsChange }: Props) {
         <>
           <div className="mt-3">
             <label className="block text-xs font-medium text-zinc-500">
-              Search city
+              <span className="flex items-center gap-2">
+                <IconSearch className="h-4 w-4" />
+                Search city
+              </span>
               <input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -314,8 +321,9 @@ export function CityManager({ onFavoriteLocationIdsChange }: Props) {
                       type="button"
                       disabled={saving}
                       onClick={() => addNewCity(r)}
-                      className="ml-3 shrink-0 rounded-full bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white shadow-sm ring-1 ring-black/10 hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-black dark:ring-white/20 dark:hover:bg-zinc-100"
+                      className="ml-3 inline-flex shrink-0 items-center gap-2 rounded-full bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white shadow-sm ring-1 ring-black/10 hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-black dark:ring-white/20 dark:hover:bg-zinc-100"
                     >
+                      <IconPlus className="h-4 w-4" />
                       Add
                     </button>
                   </li>
@@ -342,8 +350,9 @@ export function CityManager({ onFavoriteLocationIdsChange }: Props) {
               type="button"
               onClick={addFavorite}
               disabled={!selectedLocationId || saving}
-              className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-white shadow-sm ring-1 ring-black/10 disabled:opacity-50 hover:bg-zinc-800 dark:bg-white dark:text-black dark:ring-white/20 dark:hover:bg-zinc-100"
+              className="inline-flex items-center gap-2 rounded-xl bg-zinc-900 px-3 py-2 text-sm font-medium text-white shadow-sm ring-1 ring-black/10 disabled:opacity-50 hover:bg-zinc-800 dark:bg-white dark:text-black dark:ring-white/20 dark:hover:bg-zinc-100"
             >
+              <IconStar className="h-4 w-4" />
               Add
             </button>
           </div>
@@ -360,16 +369,22 @@ export function CityManager({ onFavoriteLocationIdsChange }: Props) {
                     key={l.id}
                     className="flex items-center justify-between rounded-xl border border-zinc-200/80 bg-white/60 px-3 py-2 shadow-sm ring-1 ring-black/5 backdrop-blur dark:border-zinc-800/80 dark:bg-black/30 dark:ring-white/10"
                   >
-                    <span className="text-sm text-zinc-900 dark:text-zinc-50">
-                      {l.name}
-                      {l.country ? `, ${l.country}` : ""}
+                    <span className="flex min-w-0 items-center gap-2 text-sm text-zinc-900 dark:text-zinc-50">
+                      <span className="text-zinc-500 dark:text-zinc-400">
+                        <IconMapPin className="h-4 w-4" />
+                      </span>
+                      <span className="truncate">
+                        {l.name}
+                        {l.country ? `, ${l.country}` : ""}
+                      </span>
                     </span>
                     <button
                       type="button"
                       onClick={() => removeFavorite(l.id)}
                       disabled={saving}
-                      className="rounded-full px-2 py-1 text-sm font-medium text-zinc-600 hover:bg-black/[0.04] hover:text-zinc-900 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-zinc-50"
+                      className="inline-flex items-center gap-2 rounded-full px-2 py-1 text-sm font-medium text-zinc-600 hover:bg-black/[0.04] hover:text-zinc-900 disabled:opacity-50 dark:text-zinc-400 dark:hover:bg-white/[0.06] dark:hover:text-zinc-50"
                     >
+                      <IconTrash className="h-4 w-4" />
                       Remove
                     </button>
                   </li>
